@@ -1,0 +1,15 @@
+CompileFlags:
+  CompilationDatabase: /home/ice/robot_ws/build/wheel_dog_mujoco
+  Add:
+    - -std=c++17
+
+Index:
+  Background: Build
+
+Diagnostics:
+  UnusedIncludes: Strict
+  MissingIncludes: Strict
+  ClangTidy:
+    Add:
+      - bugprone-*
+      - performance-*
