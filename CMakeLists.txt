@@ -12,6 +12,7 @@ endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(ament_cmake REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(unitree_go REQUIRED)
 
@@ -30,10 +31,16 @@ add_executable(stand_node
   src/stand_node.cpp
 )
 target_link_libraries(stand_node ${PROJECT_NAME}_control)
-ament_target_dependencies(stand_node rclcpp unitree_go)
+ament_target_dependencies(stand_node geometry_msgs rclcpp unitree_go)
+
+add_executable(keyboard_controller
+  src/keyboard_controller.cpp
+)
+target_link_libraries(keyboard_controller ${PROJECT_NAME}_control)
+ament_target_dependencies(keyboard_controller geometry_msgs rclcpp)
 
 install(
-  TARGETS ${PROJECT_NAME}_control stand_node
+  TARGETS ${PROJECT_NAME}_control stand_node keyboard_controller
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
