@@ -11,6 +11,37 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(unitree_go REQUIRED)
+
+add_library(${PROJECT_NAME}_control
+  src/motor_crc.cpp
+  src/stand_controller.cpp
+)
+target_include_directories(${PROJECT_NAME}_control PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(${PROJECT_NAME}_control unitree_go)
+
+add_executable(stand_node
+  src/main.cpp
+  src/stand_node.cpp
+)
+target_link_libraries(stand_node ${PROJECT_NAME}_control)
+ament_target_dependencies(stand_node rclcpp unitree_go)
+
+install(
+  TARGETS ${PROJECT_NAME}_control stand_node
+  EXPORT export_${PROJECT_NAME}
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY include/ DESTINATION include)
+
+ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
+ament_export_dependencies(unitree_go)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
