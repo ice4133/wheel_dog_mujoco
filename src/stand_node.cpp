@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <memory>
 #include <stdexcept>
 
 #include "rclcpp/logging.hpp"
+#include "rclcpp/rclcpp.hpp"
 #include "wheel_dog_mujoco/motor_crc.h"
 
 namespace wheel_dog_mujoco
@@ -291,3 +293,11 @@ void StandNode::LogStateTransition(const StandController::State state)
 }
 
 }  // namespace wheel_dog_mujoco
+
+int main(int argc, char * argv[])
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<wheel_dog_mujoco::StandNode>());
+  rclcpp::shutdown();
+  return 0;
+}

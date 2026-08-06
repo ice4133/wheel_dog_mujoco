@@ -27,7 +27,6 @@ target_include_directories(${PROJECT_NAME}_control PUBLIC
 ament_target_dependencies(${PROJECT_NAME}_control unitree_go)
 
 add_executable(stand_node
-  src/main.cpp
   src/stand_node.cpp
 )
 target_link_libraries(stand_node ${PROJECT_NAME}_control)
