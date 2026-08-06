@@ -16,20 +16,23 @@ find_package(geometry_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(unitree_go REQUIRED)
 
-add_library(${PROJECT_NAME}_control
-  src/motor_crc.cpp
-  src/stand_controller.cpp
+add_library(${PROJECT_NAME}_driver src/driver/drv_dds.cpp)
+target_include_directories(${PROJECT_NAME}_driver PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
 )
+ament_target_dependencies(${PROJECT_NAME}_driver rclcpp unitree_go)
+
+add_library(${PROJECT_NAME}_control src/stand_controller.cpp)
 target_include_directories(${PROJECT_NAME}_control PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-ament_target_dependencies(${PROJECT_NAME}_control unitree_go)
 
 add_executable(stand_node
   src/stand_node.cpp
 )
-target_link_libraries(stand_node ${PROJECT_NAME}_control)
+target_link_libraries(stand_node ${PROJECT_NAME}_control ${PROJECT_NAME}_driver)
 ament_target_dependencies(stand_node geometry_msgs rclcpp unitree_go)
 
 add_executable(keyboard_controller
@@ -39,7 +42,7 @@ target_link_libraries(keyboard_controller ${PROJECT_NAME}_control)
 ament_target_dependencies(keyboard_controller geometry_msgs rclcpp)
 
 install(
-  TARGETS ${PROJECT_NAME}_control stand_node keyboard_controller
+  TARGETS ${PROJECT_NAME}_driver ${PROJECT_NAME}_control stand_node keyboard_controller
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -49,7 +52,7 @@ install(
 install(DIRECTORY include/ DESTINATION include)
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(unitree_go)
+ament_export_dependencies(rclcpp unitree_go)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

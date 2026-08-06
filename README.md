@@ -2,6 +2,14 @@
 
 Go2W 的 ROS 2 C++ 控制包。目前提供低层站立控制节点，并将站立轨迹封装为可复用控制器。
 
+## 硬件通信接口
+
+`driver/drv_dds.h` 定义与传输方式无关的 `RobotCommand` 和 `RobotFeedback`。上层只需为
+20 个电机选择 `Disabled`、`Torque`、`Velocity`、`Position` 或 `Hybrid` 控制模式并调用
+`DrvDds::SendCommand()`。`drv_dds.cpp` 负责转换为 Unitree `LowCmd`、填写协议停机值、计算
+CRC 和发布 DDS 消息；接收到的 `LowState` 会被转换为电机、IMU、电池、足端力和电源反馈，
+通过 `DrvDds::GetFeedback()` 提供给上层。公共驱动头文件不暴露 Unitree ROS 消息类型。
+
 ## 编译
 
 ```bash
@@ -30,7 +38,9 @@ ros2 run wheel_dog_mujoco stand_node
 
 节点收到 `/lowstate` 后才会向 `/lowcmd` 发布控制命令。可通过 ROS 参数调整
 `crouch_pose`、`stand_pose`、`crouch_duration`、`stand_duration`、`leg_kp`、
-`leg_kd`、`wheel_kd`、`control_period`、`startup_delay` 和 `state_timeout`。
+`lie_down_duration`、`leg_kd`、`wheel_kd`、`control_period`、`startup_delay` 和
+`state_timeout`。使用 `Ctrl+C` 或向节点发送 `SIGTERM` 时，节点会先停止轮子并平滑下降到
+`crouch_pose`，完成后再退出；强制使用 `SIGKILL` 无法执行退出轨迹。
 
 ## 键盘控制
 

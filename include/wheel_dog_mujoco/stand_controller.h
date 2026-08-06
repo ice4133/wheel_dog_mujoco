@@ -21,6 +21,8 @@ public:
     kMovingToCrouch,
     kStandingUp,
     kHolding,
+    kLyingDown,
+    kLying,
   };
 
   struct Config
@@ -37,6 +39,7 @@ public:
       0.0, 0.67, -1.3};
     double crouch_duration{1.0};
     double stand_duration{1.6};
+    double lie_down_duration{1.5};
     double leg_kp{70.0};
     double leg_kd{5.0};
     double wheel_kd{5.0};
@@ -49,12 +52,14 @@ public:
   const Config & GetConfig() const noexcept;
 
   void Start(const JointPositions & current_pose);
+  void StartLieDown(const JointPositions & current_pose);
   void Reset() noexcept;
   void Update(double elapsed_seconds);
 
   const JointPositions & GetDesiredPose() const noexcept;
   State GetState() const noexcept;
   bool IsHolding() const noexcept;
+  bool IsLying() const noexcept;
 
 private:
   static void ValidateConfig(const Config & config);

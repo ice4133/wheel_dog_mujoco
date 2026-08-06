@@ -9,11 +9,9 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "rclcpp/node.hpp"
 #include "rclcpp/node_options.hpp"
-#include "rclcpp/publisher.hpp"
 #include "rclcpp/subscription.hpp"
 #include "rclcpp/timer.hpp"
-#include "unitree_go/msg/low_cmd.hpp"
-#include "unitree_go/msg/low_state.hpp"
+#include "wheel_dog_mujoco/driver/drv_dds.h"
 #include "wheel_dog_mujoco/stand_controller.h"
 
 namespace wheel_dog_mujoco
@@ -23,6 +21,7 @@ class StandNode : public rclcpp::Node
 {
 public:
   explicit StandNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+  bool LieDownBeforeShutdown();
 
 private:
   using SteadyTimePoint = std::chrono::steady_clock::time_point;
@@ -31,8 +30,6 @@ private:
   static StandController::JointPositions ToJointPositions(
     const std::vector<double> & values, const std::string & parameter_name);
 
-  void InitializeCommand();
-  void OnLowState(const unitree_go::msg::LowState::SharedPtr message);
   void OnVelocityCommand(const geometry_msgs::msg::Twist::SharedPtr message);
   void OnControlTimer();
   void UpdateWheelSpeeds(double elapsed_seconds, bool driving_enabled);
@@ -41,11 +38,10 @@ private:
   static double Approach(double current, double target, double max_change) noexcept;
 
   StandController controller_{};
-  unitree_go::msg::LowCmd low_command_{};
-  unitree_go::msg::LowState low_state_{};
+  driver::RobotCommand robot_command_{};
+  driver::RobotFeedback robot_feedback_{};
+  std::unique_ptr<driver::DrvDds> driver_;
 
-  rclcpp::Publisher<unitree_go::msg::LowCmd>::SharedPtr command_publisher_;
-  rclcpp::Subscription<unitree_go::msg::LowState>::SharedPtr state_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr velocity_subscription_;
   rclcpp::TimerBase::SharedPtr control_timer_;
 
@@ -65,7 +61,7 @@ private:
   double state_timeout_seconds_{0.2};
   double velocity_timeout_seconds_{0.25};
   SteadyTimePoint first_state_time_{};
-  SteadyTimePoint last_state_time_{};
+  SteadyTimePoint last_feedback_time_{};
   SteadyTimePoint last_velocity_command_time_{};
   SteadyTimePoint last_control_time_{};
   StandController::State last_logged_state_{StandController::State::kIdle};

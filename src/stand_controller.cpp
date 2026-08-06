@@ -37,6 +37,14 @@ void StandController::Start(const JointPositions & current_pose)
   state_ = State::kMovingToCrouch;
 }
 
+void StandController::StartLieDown(const JointPositions & current_pose)
+{
+  initial_pose_ = current_pose;
+  desired_pose_ = current_pose;
+  elapsed_seconds_ = 0.0;
+  state_ = State::kLyingDown;
+}
+
 void StandController::Reset() noexcept
 {
   initial_pose_.fill(0.0);
@@ -47,11 +55,22 @@ void StandController::Reset() noexcept
 
 void StandController::Update(const double elapsed_seconds)
 {
-  if (state_ == State::kIdle || state_ == State::kHolding) {
+  if (state_ == State::kIdle || state_ == State::kHolding || state_ == State::kLying) {
     return;
   }
 
   elapsed_seconds_ += std::max(0.0, elapsed_seconds);
+
+  if (state_ == State::kLyingDown) {
+    if (elapsed_seconds_ < config_.lie_down_duration) {
+      const double ratio = elapsed_seconds_ / config_.lie_down_duration;
+      desired_pose_ = Interpolate(initial_pose_, config_.crouch_pose, SmoothStep(ratio));
+      return;
+    }
+    desired_pose_ = config_.crouch_pose;
+    state_ = State::kLying;
+    return;
+  }
 
   if (elapsed_seconds_ < config_.crouch_duration) {
     state_ = State::kMovingToCrouch;
@@ -87,10 +106,17 @@ bool StandController::IsHolding() const noexcept
   return state_ == State::kHolding;
 }
 
+bool StandController::IsLying() const noexcept
+{
+  return state_ == State::kLying;
+}
+
 void StandController::ValidateConfig(const Config & config)
 {
-  if (config.crouch_duration <= 0.0 || config.stand_duration <= 0.0) {
-    throw std::invalid_argument("Stand transition durations must be greater than zero");
+  if (config.crouch_duration <= 0.0 || config.stand_duration <= 0.0 ||
+    config.lie_down_duration <= 0.0)
+  {
+    throw std::invalid_argument("Posture transition durations must be greater than zero");
   }
   if (config.leg_kp < 0.0 || config.leg_kd < 0.0 || config.wheel_kd < 0.0) {
     throw std::invalid_argument("Stand controller gains must not be negative");
