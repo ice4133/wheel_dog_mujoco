@@ -55,26 +55,82 @@ target_link_libraries(${PROJECT_NAME}_actuator_manager PUBLIC
   ${PROJECT_NAME}_actuator_safety
 )
 
-add_library(${PROJECT_NAME}_control src/stand_controller.cpp)
-target_include_directories(${PROJECT_NAME}_control PUBLIC
+add_library(${PROJECT_NAME}_body_model src/body/body_model.cpp)
+target_include_directories(${PROJECT_NAME}_body_model PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(${PROJECT_NAME}_body_model PUBLIC yaml-cpp)
+
+add_library(${PROJECT_NAME}_body_state_estimator src/body/body_state_estimator.cpp)
+target_include_directories(${PROJECT_NAME}_body_state_estimator PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(${PROJECT_NAME}_body_state_estimator PUBLIC
+  ${PROJECT_NAME}_body_model
+)
+
+add_library(${PROJECT_NAME}_body_trajectory src/body/body_trajectory.cpp)
+target_include_directories(${PROJECT_NAME}_body_trajectory PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
 
-add_executable(stand_node
-  src/stand_node.cpp
+add_library(${PROJECT_NAME}_body_controller src/body/body_controller.cpp)
+target_include_directories(${PROJECT_NAME}_body_controller PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(stand_node
-  ${PROJECT_NAME}_control
+target_link_libraries(${PROJECT_NAME}_body_controller PUBLIC
+  ${PROJECT_NAME}_body_trajectory
+)
+
+add_library(${PROJECT_NAME}_wheel_leg_coordinator src/body/wheel_leg_coordinator.cpp)
+target_include_directories(${PROJECT_NAME}_wheel_leg_coordinator PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(${PROJECT_NAME}_wheel_leg_coordinator PUBLIC
+  ${PROJECT_NAME}_body_controller
+  ${PROJECT_NAME}_body_model
+)
+
+add_library(${PROJECT_NAME}_body_manager src/body/body_manager.cpp)
+target_include_directories(${PROJECT_NAME}_body_manager PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(${PROJECT_NAME}_body_manager PUBLIC
+  ${PROJECT_NAME}_body_state_estimator
+  ${PROJECT_NAME}_body_trajectory
+  ${PROJECT_NAME}_body_controller
+  ${PROJECT_NAME}_wheel_leg_coordinator
+)
+
+add_library(${PROJECT_NAME}_stand_skill src/skill/stand_skill.cpp)
+target_include_directories(${PROJECT_NAME}_stand_skill PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+add_executable(body_node
+  src/body_node.cpp
+)
+target_link_libraries(body_node
   ${PROJECT_NAME}_driver
   ${PROJECT_NAME}_actuator_manager
+  ${PROJECT_NAME}_body_manager
+  ${PROJECT_NAME}_stand_skill
 )
-ament_target_dependencies(stand_node ament_index_cpp geometry_msgs rclcpp unitree_go)
+ament_target_dependencies(body_node ament_index_cpp geometry_msgs rclcpp unitree_go)
 
 add_executable(keyboard_controller
   src/keyboard_controller.cpp
 )
-target_link_libraries(keyboard_controller ${PROJECT_NAME}_control)
+target_include_directories(keyboard_controller PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
 ament_target_dependencies(keyboard_controller geometry_msgs rclcpp)
 
 install(
@@ -84,8 +140,14 @@ install(
     ${PROJECT_NAME}_actuator_controller
     ${PROJECT_NAME}_actuator_safety
     ${PROJECT_NAME}_actuator_manager
-    ${PROJECT_NAME}_control
-    stand_node
+    ${PROJECT_NAME}_body_model
+    ${PROJECT_NAME}_body_state_estimator
+    ${PROJECT_NAME}_body_trajectory
+    ${PROJECT_NAME}_body_controller
+    ${PROJECT_NAME}_wheel_leg_coordinator
+    ${PROJECT_NAME}_body_manager
+    ${PROJECT_NAME}_stand_skill
+    body_node
     keyboard_controller
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
@@ -108,6 +170,54 @@ if(BUILD_TESTING)
   target_link_libraries(actuator_manager_test ${PROJECT_NAME}_actuator_manager)
   target_compile_definitions(actuator_manager_test PRIVATE
     ACTUATOR_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config.yaml"
+  )
+
+  ament_add_gtest(body_model_test test/body_model_test.cpp)
+  target_link_libraries(body_model_test ${PROJECT_NAME}_body_model)
+  target_compile_definitions(body_model_test PRIVATE
+    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config.yaml"
+  )
+
+  ament_add_gtest(body_state_estimator_test test/body_state_estimator_test.cpp)
+  target_link_libraries(body_state_estimator_test
+    ${PROJECT_NAME}_body_state_estimator
+  )
+  target_compile_definitions(body_state_estimator_test PRIVATE
+    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config.yaml"
+  )
+
+  ament_add_gtest(body_trajectory_test test/body_trajectory_test.cpp)
+  target_link_libraries(body_trajectory_test
+    ${PROJECT_NAME}_body_trajectory
+    ${PROJECT_NAME}_body_model
+  )
+  target_compile_definitions(body_trajectory_test PRIVATE
+    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config.yaml"
+  )
+
+  ament_add_gtest(body_controller_test test/body_controller_test.cpp)
+  target_link_libraries(body_controller_test
+    ${PROJECT_NAME}_body_controller
+    ${PROJECT_NAME}_body_model
+  )
+  target_compile_definitions(body_controller_test PRIVATE
+    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config.yaml"
+  )
+
+  ament_add_gtest(wheel_leg_coordinator_test test/wheel_leg_coordinator_test.cpp)
+  target_link_libraries(wheel_leg_coordinator_test
+    ${PROJECT_NAME}_wheel_leg_coordinator
+  )
+  target_compile_definitions(wheel_leg_coordinator_test PRIVATE
+    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config.yaml"
+  )
+
+  ament_add_gtest(body_manager_test test/body_manager_test.cpp)
+  target_link_libraries(body_manager_test
+    ${PROJECT_NAME}_body_manager
+  )
+  target_compile_definitions(body_manager_test PRIVATE
+    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config.yaml"
   )
 endif()
 
