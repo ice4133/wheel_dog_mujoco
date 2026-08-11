@@ -11,19 +11,18 @@
 #include "rclcpp/subscription.hpp"
 #include "rclcpp/timer.hpp"
 #include "wheel_dog_mujoco/actuator/actuator_manager.h"
-#include "wheel_dog_mujoco/body/body_manager.h"
 #include "wheel_dog_mujoco/driver/drv_dds.h"
 #include "wheel_dog_mujoco/skill/stand_skill.h"
 
 namespace wheel_dog_mujoco
 {
 
-// Runtime composition adapter. Motion policy belongs to StandSkill; body,
-// actuator and transport calculations remain in their respective managers.
-class BodyNode : public rclcpp::Node
+// Exclusive runtime for the stand skill. This node is the sole /lowcmd owner
+// while active and never invokes the body-space controller or IK.
+class StandSkillNode : public rclcpp::Node
 {
 public:
-  explicit BodyNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+  explicit StandSkillNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
   bool LieDownBeforeShutdown();
 
 private:
@@ -32,23 +31,15 @@ private:
   void OnVelocityCommand(const geometry_msgs::msg::Twist::SharedPtr message);
   void OnControlTimer();
   bool RefreshFeedback();
-  body::BodySensorFrame DecodeBodySensors(const driver::RobotFeedback & feedback) const;
   bool SendSkillCommand(SteadyTimePoint now, double elapsed_seconds);
-  bool SendBodyCommand(
-    const body::BodyCommandFrame & command, SteadyTimePoint now,
-    double elapsed_seconds);
-  void SendDisabledFallback(SteadyTimePoint now);
+  void SendDampingFallback(SteadyTimePoint now);
   void LogSkillPhase();
-  void LogBodyResult(const body::ManagerOutput & output);
   void LogActuatorResult(
     const actuator::ManagerOutput & output,
     const actuator::JointStateFrame & state);
 
-  body::BodySensorFrame body_sensor_frame_{};
-  body::ManagerOutput body_output_{};
   actuator::JointStateFrame joint_state_frame_{};
   driver::RobotCommand robot_command_{};
-  std::unique_ptr<body::BodyManager> body_manager_;
   std::unique_ptr<actuator::ActuatorManager> actuator_manager_;
   std::unique_ptr<skill::StandSkill> stand_skill_;
   std::unique_ptr<driver::DrvDds> driver_;
@@ -59,7 +50,6 @@ private:
   double shutdown_timeout_seconds_{4.0};
   double control_period_seconds_{0.002};
   double state_timeout_seconds_{0.2};
-  bool contact_force_feedback_available_{false};
   bool has_low_state_{false};
   bool phase_logged_{false};
   std::uint64_t fallback_sequence_{0};

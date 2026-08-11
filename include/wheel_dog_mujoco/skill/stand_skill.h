@@ -1,22 +1,27 @@
 #pragma once
 
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 
-#include "wheel_dog_mujoco/body/body_type.h"
+#include "wheel_dog_mujoco/actuator/actuator_type.h"
 
 namespace wheel_dog_mujoco::skill
 {
 
-// StandSkill is an L4 finite-state motion skill. It never talks to DDS or
-// actuators; its only output is the L3 BodyCommandFrame boundary.
+// Joint-space L4 skill for deterministic stand-up and lie-down. Fixed posture
+// motions intentionally bypass the body-space controller and do not use IK.
 class StandSkill
 {
 public:
+  static constexpr std::size_t kLegJointCount = 12U;
+  using LegJointPositions = std::array<double, kLegJointCount>;
+
   enum class Phase : std::uint8_t
   {
     kWaitingForState,
-    kRecovering,
+    kMovingToCrouch,
     kRising,
     kHolding,
     kLyingDown,
@@ -25,21 +30,32 @@ public:
 
   struct Config
   {
-    double recovery_ground_clearance{0.20};
-    double stand_ground_clearance{0.42};
-    double lie_down_ground_clearance{0.20};
-    double height_tolerance{0.03};
-    double attitude_tolerance{0.15};
-    double angular_velocity_tolerance{0.40};
-    double settle_duration{0.25};
+    LegJointPositions crouch_pose{
+      0.0, 1.36, -2.65,
+      0.0, 1.36, -2.65,
+      -0.2, 1.36, -2.65,
+      0.2, 1.36, -2.65};
+    LegJointPositions stand_pose{
+      0.0, 0.67, -1.30,
+      0.0, 0.67, -1.30,
+      0.0, 0.67, -1.30,
+      0.0, 0.67, -1.30};
+    double crouch_duration{1.0};
+    double rise_duration{1.6};
+    double lie_down_duration{1.5};
     double velocity_timeout{0.25};
+    double wheel_radius{0.086};
+    double track_width{0.284};
+    double max_wheel_speed{6.0};
+    double wheel_acceleration{12.0};
   };
 
   explicit StandSkill(const Config & config);
 
-  body::BodyCommandFrame Update(
-    const body::BodyStateFrame & body_state,
-    std::chrono::steady_clock::time_point now);
+  actuator::JointCommandFrame Update(
+    const actuator::JointStateFrame & state,
+    std::chrono::steady_clock::time_point now,
+    double elapsed_seconds);
   void SetVelocityTarget(
     double linear_velocity, double yaw_velocity,
     std::chrono::steady_clock::time_point received_at) noexcept;
@@ -52,25 +68,36 @@ public:
   static const char * PhaseName(Phase phase) noexcept;
 
 private:
-  body::BodyCommandFrame MakeDisabledCommand(
+  bool IsStateValid(const actuator::JointStateFrame & state) const noexcept;
+  LegJointPositions ReadLegPositions(
+    const actuator::JointStateFrame & state) const noexcept;
+  actuator::JointCommandFrame MakeDampingCommand(
     std::chrono::steady_clock::time_point now);
-  body::BodyCommandFrame MakeHeightCommand(
-    double ground_clearance, bool allow_driving,
-    std::chrono::steady_clock::time_point now);
-  bool IsPostureSettled(
-    const body::BodyState & state, double target_ground_clearance,
-    std::chrono::steady_clock::time_point now) noexcept;
-  void SetPhase(Phase phase) noexcept;
+  actuator::JointCommandFrame MakeJointCommand(
+    const LegJointPositions & leg_positions,
+    std::chrono::steady_clock::time_point now,
+    double elapsed_seconds);
+  void StartPhase(
+    Phase phase, const LegJointPositions & transition_start) noexcept;
+  static LegJointPositions Interpolate(
+    const LegJointPositions & from, const LegJointPositions & to,
+    double ratio) noexcept;
+  static double SmoothStep(double ratio) noexcept;
 
   Config config_{};
+  LegJointPositions transition_start_pose_{};
+  LegJointPositions desired_leg_pose_{};
   Phase phase_{Phase::kWaitingForState};
   double desired_linear_velocity_{0.0};
   double desired_yaw_velocity_{0.0};
+  double right_wheel_velocity_{0.0};
+  double left_wheel_velocity_{0.0};
+  double phase_elapsed_seconds_{0.0};
   std::chrono::steady_clock::time_point last_velocity_command_at_{};
-  std::chrono::steady_clock::time_point settled_since_{};
   std::uint64_t sequence_{0};
   bool has_velocity_command_{false};
   bool lie_down_requested_{false};
+  bool initialized_{false};
 };
 
 }  // namespace wheel_dog_mujoco::skill

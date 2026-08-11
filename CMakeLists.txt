@@ -114,16 +114,15 @@ target_include_directories(${PROJECT_NAME}_stand_skill PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-add_executable(body_node
-  src/body_node.cpp
+add_executable(stand_skill_node
+  src/stand_skill_node.cpp
 )
-target_link_libraries(body_node
+target_link_libraries(stand_skill_node
   ${PROJECT_NAME}_driver
   ${PROJECT_NAME}_actuator_manager
-  ${PROJECT_NAME}_body_manager
   ${PROJECT_NAME}_stand_skill
 )
-ament_target_dependencies(body_node ament_index_cpp geometry_msgs rclcpp unitree_go)
+ament_target_dependencies(stand_skill_node ament_index_cpp geometry_msgs rclcpp unitree_go)
 
 add_executable(keyboard_controller
   src/keyboard_controller.cpp
@@ -147,7 +146,7 @@ install(
     ${PROJECT_NAME}_wheel_leg_coordinator
     ${PROJECT_NAME}_body_manager
     ${PROJECT_NAME}_stand_skill
-    body_node
+    stand_skill_node
     keyboard_controller
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib

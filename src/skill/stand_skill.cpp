@@ -1,6 +1,7 @@
 #include "wheel_dog_mujoco/skill/stand_skill.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <stdexcept>
 
@@ -9,21 +10,21 @@ namespace wheel_dog_mujoco::skill
 namespace
 {
 
+constexpr std::array<actuator::JointId, 4> kWheelJointIds{{
+  actuator::JointId::kFrontRightWheel,
+  actuator::JointId::kFrontLeftWheel,
+  actuator::JointId::kRearRightWheel,
+  actuator::JointId::kRearLeftWheel,
+}};
+
 bool IsFinite(const double value) noexcept
 {
   return std::isfinite(value);
 }
 
-body::Vector3 QuaternionToRpy(const body::Quaternion & q) noexcept
+double Approach(const double current, const double target, const double max_change) noexcept
 {
-  return body::Vector3{
-    std::atan2(
-      2.0 * (q.w * q.x + q.y * q.z),
-      1.0 - 2.0 * (q.x * q.x + q.y * q.y)),
-    std::asin(std::clamp(2.0 * (q.w * q.y - q.z * q.x), -1.0, 1.0)),
-    std::atan2(
-      2.0 * (q.w * q.z + q.x * q.y),
-      1.0 - 2.0 * (q.y * q.y + q.z * q.z))};
+  return current + std::clamp(target - current, -max_change, max_change);
 }
 
 }  // namespace
@@ -31,65 +32,92 @@ body::Vector3 QuaternionToRpy(const body::Quaternion & q) noexcept
 StandSkill::StandSkill(const Config & config)
 : config_(config)
 {
-  if (!IsFinite(config_.recovery_ground_clearance) ||
-    config_.recovery_ground_clearance <= 0.0 ||
-    !IsFinite(config_.stand_ground_clearance) ||
-    config_.stand_ground_clearance < config_.recovery_ground_clearance ||
-    !IsFinite(config_.lie_down_ground_clearance) ||
-    config_.lie_down_ground_clearance <= 0.0 ||
-    config_.lie_down_ground_clearance > config_.stand_ground_clearance ||
-    !IsFinite(config_.height_tolerance) || config_.height_tolerance <= 0.0 ||
-    !IsFinite(config_.attitude_tolerance) || config_.attitude_tolerance <= 0.0 ||
-    !IsFinite(config_.angular_velocity_tolerance) ||
-    config_.angular_velocity_tolerance <= 0.0 ||
-    !IsFinite(config_.settle_duration) || config_.settle_duration < 0.0 ||
-    !IsFinite(config_.velocity_timeout) || config_.velocity_timeout <= 0.0)
+  const bool poses_are_finite = std::all_of(
+    config_.crouch_pose.begin(), config_.crouch_pose.end(), IsFinite) &&
+    std::all_of(config_.stand_pose.begin(), config_.stand_pose.end(), IsFinite);
+  if (!poses_are_finite ||
+    !IsFinite(config_.crouch_duration) || config_.crouch_duration <= 0.0 ||
+    !IsFinite(config_.rise_duration) || config_.rise_duration <= 0.0 ||
+    !IsFinite(config_.lie_down_duration) || config_.lie_down_duration <= 0.0 ||
+    !IsFinite(config_.velocity_timeout) || config_.velocity_timeout <= 0.0 ||
+    !IsFinite(config_.wheel_radius) || config_.wheel_radius <= 0.0 ||
+    !IsFinite(config_.track_width) || config_.track_width <= 0.0 ||
+    !IsFinite(config_.max_wheel_speed) || config_.max_wheel_speed <= 0.0 ||
+    !IsFinite(config_.wheel_acceleration) || config_.wheel_acceleration <= 0.0)
   {
     throw std::invalid_argument("StandSkill configuration is invalid");
   }
 }
 
-body::BodyCommandFrame StandSkill::Update(
-  const body::BodyStateFrame & body_state,
-  const std::chrono::steady_clock::time_point now)
+actuator::JointCommandFrame StandSkill::Update(
+  const actuator::JointStateFrame & state,
+  const std::chrono::steady_clock::time_point now,
+  const double elapsed_seconds)
 {
-  if (!body_state.state.valid || !body_state.status.state_estimate_valid) {
-    SetPhase(Phase::kWaitingForState);
-    return MakeDisabledCommand(now);
+  if (!IsStateValid(state) || !IsFinite(elapsed_seconds) || elapsed_seconds <= 0.0) {
+    return MakeDampingCommand(now);
+  }
+
+  const LegJointPositions measured_pose = ReadLegPositions(state);
+  if (!initialized_) {
+    transition_start_pose_ = measured_pose;
+    desired_leg_pose_ = measured_pose;
+    right_wheel_velocity_ = state.joints[
+      actuator::ToIndex(actuator::JointId::kFrontRightWheel)].velocity;
+    left_wheel_velocity_ = state.joints[
+      actuator::ToIndex(actuator::JointId::kFrontLeftWheel)].velocity;
+    initialized_ = true;
+    StartPhase(
+      lie_down_requested_ ? Phase::kLyingDown : Phase::kMovingToCrouch,
+      measured_pose);
   }
 
   if (lie_down_requested_ && phase_ != Phase::kLyingDown && phase_ != Phase::kLying) {
-    SetPhase(Phase::kLyingDown);
-  } else if (phase_ == Phase::kWaitingForState) {
-    SetPhase(lie_down_requested_ ? Phase::kLyingDown : Phase::kRecovering);
+    StartPhase(Phase::kLyingDown, measured_pose);
   }
 
+  phase_elapsed_seconds_ += elapsed_seconds;
   switch (phase_) {
     case Phase::kWaitingForState:
-      return MakeDisabledCommand(now);
-    case Phase::kRecovering:
-      if (IsPostureSettled(
-          body_state.state, config_.recovery_ground_clearance, now))
-      {
-        SetPhase(Phase::kRising);
+      return MakeDampingCommand(now);
+    case Phase::kMovingToCrouch: {
+        const double ratio = phase_elapsed_seconds_ / config_.crouch_duration;
+        desired_leg_pose_ = Interpolate(
+          transition_start_pose_, config_.crouch_pose, SmoothStep(ratio));
+        if (ratio >= 1.0) {
+          desired_leg_pose_ = config_.crouch_pose;
+          StartPhase(Phase::kRising, config_.crouch_pose);
+        }
+        break;
       }
-      return MakeHeightCommand(config_.recovery_ground_clearance, false, now);
-    case Phase::kRising:
-      if (IsPostureSettled(body_state.state, config_.stand_ground_clearance, now)) {
-        SetPhase(Phase::kHolding);
+    case Phase::kRising: {
+        const double ratio = phase_elapsed_seconds_ / config_.rise_duration;
+        desired_leg_pose_ = Interpolate(
+          transition_start_pose_, config_.stand_pose, SmoothStep(ratio));
+        if (ratio >= 1.0) {
+          desired_leg_pose_ = config_.stand_pose;
+          StartPhase(Phase::kHolding, config_.stand_pose);
+        }
+        break;
       }
-      return MakeHeightCommand(config_.stand_ground_clearance, false, now);
     case Phase::kHolding:
-      return MakeHeightCommand(config_.stand_ground_clearance, true, now);
-    case Phase::kLyingDown:
-      if (IsPostureSettled(body_state.state, config_.lie_down_ground_clearance, now)) {
-        SetPhase(Phase::kLying);
+      desired_leg_pose_ = config_.stand_pose;
+      break;
+    case Phase::kLyingDown: {
+        const double ratio = phase_elapsed_seconds_ / config_.lie_down_duration;
+        desired_leg_pose_ = Interpolate(
+          transition_start_pose_, config_.crouch_pose, SmoothStep(ratio));
+        if (ratio >= 1.0) {
+          desired_leg_pose_ = config_.crouch_pose;
+          StartPhase(Phase::kLying, config_.crouch_pose);
+        }
+        break;
       }
-      return MakeHeightCommand(config_.lie_down_ground_clearance, false, now);
     case Phase::kLying:
-      return MakeHeightCommand(config_.lie_down_ground_clearance, false, now);
+      desired_leg_pose_ = config_.crouch_pose;
+      break;
   }
-  return MakeDisabledCommand(now);
+  return MakeJointCommand(desired_leg_pose_, now, elapsed_seconds);
 }
 
 void StandSkill::SetVelocityTarget(
@@ -111,21 +139,23 @@ void StandSkill::RequestLieDown() noexcept
   desired_linear_velocity_ = 0.0;
   desired_yaw_velocity_ = 0.0;
   has_velocity_command_ = false;
-  if (phase_ != Phase::kWaitingForState && phase_ != Phase::kLying) {
-    SetPhase(Phase::kLyingDown);
-  }
 }
 
 void StandSkill::Reset() noexcept
 {
+  transition_start_pose_.fill(0.0);
+  desired_leg_pose_.fill(0.0);
   phase_ = Phase::kWaitingForState;
   desired_linear_velocity_ = 0.0;
   desired_yaw_velocity_ = 0.0;
+  right_wheel_velocity_ = 0.0;
+  left_wheel_velocity_ = 0.0;
+  phase_elapsed_seconds_ = 0.0;
   last_velocity_command_at_ = {};
-  settled_since_ = {};
   sequence_ = 0U;
   has_velocity_command_ = false;
   lie_down_requested_ = false;
+  initialized_ = false;
 }
 
 StandSkill::Phase StandSkill::GetPhase() const noexcept
@@ -148,8 +178,8 @@ const char * StandSkill::PhaseName(const Phase phase) noexcept
   switch (phase) {
     case Phase::kWaitingForState:
       return "waiting for state";
-    case Phase::kRecovering:
-      return "recovering to crouch";
+    case Phase::kMovingToCrouch:
+      return "moving to crouch";
     case Phase::kRising:
       return "rising";
     case Phase::kHolding:
@@ -162,35 +192,70 @@ const char * StandSkill::PhaseName(const Phase phase) noexcept
   return "unknown";
 }
 
-body::BodyCommandFrame StandSkill::MakeDisabledCommand(
+bool StandSkill::IsStateValid(const actuator::JointStateFrame & state) const noexcept
+{
+  return std::all_of(
+    state.joints.begin(), state.joints.end(),
+    [](const actuator::JointState & joint) {
+      return joint.online && IsFinite(joint.position) && IsFinite(joint.velocity);
+    });
+}
+
+StandSkill::LegJointPositions StandSkill::ReadLegPositions(
+  const actuator::JointStateFrame & state) const noexcept
+{
+  LegJointPositions positions{};
+  for (std::size_t index = 0U; index < positions.size(); ++index) {
+    positions[index] = state.joints[index].position;
+  }
+  return positions;
+}
+
+actuator::JointCommandFrame StandSkill::MakeDampingCommand(
   const std::chrono::steady_clock::time_point now)
 {
-  body::BodyCommandFrame command;
-  command.command.control_mode = body::ControlMode::kDisabled;
+  actuator::JointCommandFrame command;
+  for (auto & joint : command.joints) {
+    joint.control_mode = actuator::ControlMode::kDamping;
+    joint.gain_profile = actuator::GainProfile::kSoft;
+  }
   command.created_at = now;
   command.sequence = ++sequence_;
   return command;
 }
 
-body::BodyCommandFrame StandSkill::MakeHeightCommand(
-  const double ground_clearance, const bool allow_driving,
-  const std::chrono::steady_clock::time_point now)
+actuator::JointCommandFrame StandSkill::MakeJointCommand(
+  const LegJointPositions & leg_positions,
+  const std::chrono::steady_clock::time_point now,
+  const double elapsed_seconds)
 {
-  body::BodyCommandFrame command;
-  command.command.control_mode = body::ControlMode::kHybrid;
-  command.command.pose_frame = body::ReferenceFrame::kWorld;
-  command.command.twist_frame = body::ReferenceFrame::kBody;
-  command.command.desired_pose.position.z = ground_clearance;
-  command.command.desired_pose.orientation = body::Quaternion{};
+  actuator::JointCommandFrame command;
+  for (std::size_t index = 0U; index < leg_positions.size(); ++index) {
+    command.joints[index].control_mode = actuator::ControlMode::kPosition;
+    command.joints[index].gain_profile = actuator::GainProfile::kNormal;
+    command.joints[index].position = leg_positions[index];
+  }
 
-  if (allow_driving && has_velocity_command_) {
+  double target_right = 0.0;
+  double target_left = 0.0;
+  if (phase_ == Phase::kHolding && has_velocity_command_) {
     const double command_age =
       std::chrono::duration<double>(now - last_velocity_command_at_).count();
     if (IsFinite(command_age) && command_age >= 0.0 &&
       command_age <= config_.velocity_timeout)
     {
-      command.command.desired_twist.linear.x = desired_linear_velocity_;
-      command.command.desired_twist.angular.z = desired_yaw_velocity_;
+      target_right =
+        (desired_linear_velocity_ + 0.5 * config_.track_width * desired_yaw_velocity_) /
+        config_.wheel_radius;
+      target_left =
+        (desired_linear_velocity_ - 0.5 * config_.track_width * desired_yaw_velocity_) /
+        config_.wheel_radius;
+      const double largest = std::max(std::abs(target_right), std::abs(target_left));
+      if (largest > config_.max_wheel_speed) {
+        const double scale = config_.max_wheel_speed / largest;
+        target_right *= scale;
+        target_left *= scale;
+      }
     } else {
       desired_linear_velocity_ = 0.0;
       desired_yaw_velocity_ = 0.0;
@@ -198,41 +263,48 @@ body::BodyCommandFrame StandSkill::MakeHeightCommand(
     }
   }
 
+  const double max_change = config_.wheel_acceleration * elapsed_seconds;
+  right_wheel_velocity_ = Approach(right_wheel_velocity_, target_right, max_change);
+  left_wheel_velocity_ = Approach(left_wheel_velocity_, target_left, max_change);
+  const std::array<double, 4> wheel_velocities{{
+    right_wheel_velocity_, left_wheel_velocity_,
+    right_wheel_velocity_, left_wheel_velocity_}};
+  for (std::size_t index = 0U; index < kWheelJointIds.size(); ++index) {
+    auto & wheel = command.joints[actuator::ToIndex(kWheelJointIds[index])];
+    wheel.control_mode = actuator::ControlMode::kVelocity;
+    wheel.gain_profile = actuator::GainProfile::kNormal;
+    wheel.velocity = wheel_velocities[index];
+  }
+
   command.created_at = now;
   command.sequence = ++sequence_;
   return command;
 }
 
-bool StandSkill::IsPostureSettled(
-  const body::BodyState & state, const double target_ground_clearance,
-  const std::chrono::steady_clock::time_point now) noexcept
+void StandSkill::StartPhase(
+  const Phase phase, const LegJointPositions & transition_start) noexcept
 {
-  const body::Vector3 rpy = QuaternionToRpy(state.pose_world.orientation);
-  const bool settled =
-    std::abs(state.ground_clearance - target_ground_clearance) <=
-    config_.height_tolerance &&
-    std::abs(rpy.x) <= config_.attitude_tolerance &&
-    std::abs(rpy.y) <= config_.attitude_tolerance &&
-    std::abs(state.twist_body.angular.x) <= config_.angular_velocity_tolerance &&
-    std::abs(state.twist_body.angular.y) <= config_.angular_velocity_tolerance;
-  if (!settled) {
-    settled_since_ = {};
-    return false;
-  }
-  if (settled_since_ == std::chrono::steady_clock::time_point{}) {
-    settled_since_ = now;
-  }
-  return std::chrono::duration<double>(now - settled_since_).count() >=
-         config_.settle_duration;
+  phase_ = phase;
+  transition_start_pose_ = transition_start;
+  phase_elapsed_seconds_ = 0.0;
 }
 
-void StandSkill::SetPhase(const Phase phase) noexcept
+StandSkill::LegJointPositions StandSkill::Interpolate(
+  const LegJointPositions & from, const LegJointPositions & to,
+  const double ratio) noexcept
 {
-  if (phase_ == phase) {
-    return;
+  LegJointPositions result{};
+  const double bounded_ratio = std::clamp(ratio, 0.0, 1.0);
+  for (std::size_t index = 0U; index < result.size(); ++index) {
+    result[index] = from[index] + bounded_ratio * (to[index] - from[index]);
   }
-  phase_ = phase;
-  settled_since_ = {};
+  return result;
+}
+
+double StandSkill::SmoothStep(const double ratio) noexcept
+{
+  const double bounded_ratio = std::clamp(ratio, 0.0, 1.0);
+  return bounded_ratio * bounded_ratio * (3.0 - 2.0 * bounded_ratio);
 }
 
 }  // namespace wheel_dog_mujoco::skill
