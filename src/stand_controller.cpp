@@ -118,9 +118,6 @@ void StandController::ValidateConfig(const Config & config)
   {
     throw std::invalid_argument("Posture transition durations must be greater than zero");
   }
-  if (config.leg_kp < 0.0 || config.leg_kd < 0.0 || config.wheel_kd < 0.0) {
-    throw std::invalid_argument("Stand controller gains must not be negative");
-  }
 }
 
 StandController::JointPositions StandController::Interpolate(

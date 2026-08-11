@@ -10,6 +10,17 @@ Go2W 的 ROS 2 C++ 控制包。目前提供低层站立控制节点，并将站�
 CRC 和发布 DDS 消息；接收到的 `LowState` 会被转换为电机、IMU、电池、足端力和电源反馈，
 通过 `DrvDds::GetFeedback()` 提供给上层。公共驱动头文件不暴露 Unitree ROS 消息类型。
 
+## 执行器控制接口
+
+`ActuatorManager` 是本层对后续本体运动控制层提供的统一入口。上层使用语义化的
+`JointCommandFrame` 给 16 个关节指定位置、速度、力矩或混合控制目标；manager 依次执行
+反馈解码、安全检查、限位/限速、控制模式平滑切换、增益选择和电机侧单位映射，最终产生
+可直接交给 `DrvDds::SendCommand()` 的 `RobotCommand`。反馈则通过
+`ActuatorManager::DecodeFeedback()` 转成 `JointStateFrame`，上层无需依赖电机编号和减速比。
+
+执行器映射、极限、PID 增益、超时和模式切换参数统一放在 `config.yaml`。`stand_node` 已作为
+完整链路测试程序接入 manager，不再直接拼装底层电机命令。
+
 ## 编译
 
 ```bash
@@ -37,9 +48,10 @@ ros2 run wheel_dog_mujoco stand_node
 ```
 
 节点收到 `/lowstate` 后才会向 `/lowcmd` 发布控制命令。可通过 ROS 参数调整
-`crouch_pose`、`stand_pose`、`crouch_duration`、`stand_duration`、`leg_kp`、
-`lie_down_duration`、`leg_kd`、`wheel_kd`、`control_period`、`startup_delay` 和
-`state_timeout`。使用 `Ctrl+C` 或向节点发送 `SIGTERM` 时，节点会先停止轮子并平滑下降到
+`crouch_pose`、`stand_pose`、`crouch_duration`、`stand_duration`、
+`lie_down_duration`、`control_period`、`startup_delay`、`state_timeout` 和
+`actuator_config_path`。执行器 PID 参数统一在 `config.yaml` 中调整。使用 `Ctrl+C` 或向节点发送
+`SIGTERM` 时，节点会先停止轮子并平滑下降到
 `crouch_pose`，完成后再退出；强制使用 `SIGKILL` 无法执行退出轨迹。
 
 ## 键盘控制

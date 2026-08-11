@@ -2,6 +2,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -11,6 +12,7 @@
 #include "rclcpp/node_options.hpp"
 #include "rclcpp/subscription.hpp"
 #include "rclcpp/timer.hpp"
+#include "wheel_dog_mujoco/actuator/actuator_manager.h"
 #include "wheel_dog_mujoco/driver/drv_dds.h"
 #include "wheel_dog_mujoco/stand_controller.h"
 
@@ -33,13 +35,17 @@ private:
   void OnVelocityCommand(const geometry_msgs::msg::Twist::SharedPtr message);
   void OnControlTimer();
   void UpdateWheelSpeeds(double elapsed_seconds, bool driving_enabled);
-  void ApplyControllerCommand();
+  bool RefreshFeedback();
+  void BuildJointCommand(SteadyTimePoint now);
+  bool SendActuatorCommand(SteadyTimePoint now, double elapsed_seconds);
   void LogStateTransition(StandController::State state);
   static double Approach(double current, double target, double max_change) noexcept;
 
   StandController controller_{};
+  actuator::JointCommandFrame joint_command_frame_{};
+  actuator::JointStateFrame joint_state_frame_{};
   driver::RobotCommand robot_command_{};
-  driver::RobotFeedback robot_feedback_{};
+  std::unique_ptr<actuator::ActuatorManager> actuator_manager_;
   std::unique_ptr<driver::DrvDds> driver_;
 
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr velocity_subscription_;
@@ -56,6 +62,7 @@ private:
   bool has_low_state_{false};
   bool has_velocity_command_{false};
   bool controller_started_{false};
+  std::uint64_t command_sequence_{0};
   double control_period_seconds_{0.002};
   double startup_delay_seconds_{1.0};
   double state_timeout_seconds_{0.2};

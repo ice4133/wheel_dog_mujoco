@@ -5,9 +5,11 @@
 #include <cmath>
 #include <functional>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 
+#include "ament_index_cpp/get_package_share_directory.hpp"
 #include "rclcpp/logging.hpp"
 #include "rclcpp/rclcpp.hpp"
 
@@ -30,6 +32,10 @@ StandNode::StandNode(const rclcpp::NodeOptions & options)
   const auto command_topic = declare_parameter<std::string>("command_topic", "/lowcmd");
   const auto state_topic = declare_parameter<std::string>("state_topic", "/lowstate");
   const auto velocity_topic = declare_parameter<std::string>("velocity_topic", "/cmd_vel");
+  const auto default_actuator_config =
+    ament_index_cpp::get_package_share_directory("wheel_dog_mujoco") + "/config.yaml";
+  const auto actuator_config_path = declare_parameter<std::string>(
+    "actuator_config_path", default_actuator_config);
 
   if (control_period_seconds_ <= 0.0 || startup_delay_seconds_ < 0.0 ||
     state_timeout_seconds_ <= 0.0 || velocity_timeout_seconds_ <= 0.0 ||
@@ -39,6 +45,7 @@ StandNode::StandNode(const rclcpp::NodeOptions & options)
     throw std::invalid_argument("Timing parameters are outside their valid range");
   }
 
+  actuator_manager_ = std::make_unique<actuator::ActuatorManager>(actuator_config_path);
   driver_ = std::make_unique<driver::DrvDds>(
     *this, driver::DrvDds::Config{command_topic, state_topic, 10U});
   velocity_subscription_ = create_subscription<geometry_msgs::msg::Twist>(
@@ -63,9 +70,6 @@ StandController::Config StandNode::LoadControllerConfig()
   config.stand_duration = declare_parameter<double>("stand_duration", config.stand_duration);
   config.lie_down_duration = declare_parameter<double>(
     "lie_down_duration", config.lie_down_duration);
-  config.leg_kp = declare_parameter<double>("leg_kp", config.leg_kp);
-  config.leg_kd = declare_parameter<double>("leg_kd", config.leg_kd);
-  config.wheel_kd = declare_parameter<double>("wheel_kd", config.wheel_kd);
 
   config.crouch_pose = ToJointPositions(
     declare_parameter<std::vector<double>>(
@@ -98,9 +102,17 @@ bool StandNode::LieDownBeforeShutdown()
     return false;
   }
 
+  joint_state_frame_ = actuator_manager_->DecodeFeedback(*feedback);
+  last_feedback_time_ = joint_state_frame_.received_at;
   StandController::JointPositions current_pose{};
   for (std::size_t index = 0; index < current_pose.size(); ++index) {
-    current_pose[index] = feedback->motors[index].position;
+    const auto & joint = joint_state_frame_.joints[index];
+    if (!joint.online) {
+      RCLCPP_WARN(
+        get_logger(), "Joint %zu is offline; lie-down skipped", index);
+      return false;
+    }
+    current_pose[index] = joint.position;
   }
   if (!std::all_of(
       current_pose.begin(), current_pose.end(),
@@ -116,17 +128,24 @@ bool StandNode::LieDownBeforeShutdown()
   controller_.StartLieDown(current_pose);
   RCLCPP_INFO(get_logger(), "Shutdown requested; stopping wheels and lying down");
 
+  rclcpp::executors::SingleThreadedExecutor feedback_executor;
+  feedback_executor.add_node(shared_from_this());
   auto previous_time = std::chrono::steady_clock::now();
   auto next_update = previous_time;
   while (!controller_.IsLying()) {
+    feedback_executor.spin_some();
+    RefreshFeedback();
     const auto update_time = std::chrono::steady_clock::now();
     const double elapsed = std::chrono::duration<double>(update_time - previous_time).count();
     previous_time = update_time;
 
     controller_.Update(elapsed);
     UpdateWheelSpeeds(elapsed, false);
-    ApplyControllerCommand();
-    driver_->SendCommand(robot_command_);
+    if (!SendActuatorCommand(update_time, elapsed)) {
+      RCLCPP_ERROR(get_logger(), "Actuator safety rejected lie-down; fallback sent and lie-down aborted");
+      feedback_executor.remove_node(shared_from_this());
+      return false;
+    }
 
     next_update += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
       std::chrono::duration<double>(control_period_seconds_));
@@ -135,11 +154,14 @@ bool StandNode::LieDownBeforeShutdown()
 
   current_right_wheel_speed_ = 0.0;
   current_left_wheel_speed_ = 0.0;
-  ApplyControllerCommand();
   for (int index = 0; index < 10; ++index) {
-    driver_->SendCommand(robot_command_);
+    feedback_executor.spin_some();
+    RefreshFeedback();
+    const auto update_time = std::chrono::steady_clock::now();
+    SendActuatorCommand(update_time, control_period_seconds_);
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
+  feedback_executor.remove_node(shared_from_this());
   RCLCPP_INFO(get_logger(), "Lie-down complete; shutting down the node");
   return true;
 }
@@ -171,12 +193,10 @@ void StandNode::OnVelocityCommand(const geometry_msgs::msg::Twist::SharedPtr mes
 
 void StandNode::OnControlTimer()
 {
-  const auto feedback = driver_->GetFeedback();
-  if (feedback && feedback->received_at != last_feedback_time_) {
-    robot_feedback_ = *feedback;
-    last_feedback_time_ = feedback->received_at;
+  const bool received_new_feedback = RefreshFeedback();
+  if (received_new_feedback) {
     if (!has_low_state_) {
-      first_state_time_ = feedback->received_at;
+      first_state_time_ = last_feedback_time_;
       RCLCPP_INFO(get_logger(), "Received the first low state; observing before stand-up");
     }
     has_low_state_ = true;
@@ -197,11 +217,11 @@ void StandNode::OnControlTimer()
     current_right_wheel_speed_ = 0.0;
     current_left_wheel_speed_ = 0.0;
     if (controller_started_) {
-      ApplyControllerCommand();
-      driver_->SendCommand(robot_command_);
+      SendActuatorCommand(now, control_period_seconds_);
     }
     controller_started_ = false;
     controller_.Reset();
+    actuator_manager_->Reset();
     has_low_state_ = false;
     return;
   }
@@ -214,7 +234,13 @@ void StandNode::OnControlTimer()
   if (!controller_started_) {
     StandController::JointPositions current_pose{};
     for (std::size_t index = 0; index < current_pose.size(); ++index) {
-      current_pose[index] = robot_feedback_.motors[index].position;
+      if (!joint_state_frame_.joints[index].online) {
+        RCLCPP_ERROR_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Joint %zu is offline; stand-up is blocked", index);
+        return;
+      }
+      current_pose[index] = joint_state_frame_.joints[index].position;
     }
     if (!std::all_of(
         current_pose.begin(), current_pose.end(),
@@ -231,12 +257,13 @@ void StandNode::OnControlTimer()
     RCLCPP_INFO(get_logger(), "Starting the Go2W stand-up sequence");
   }
 
-  const double elapsed = std::chrono::duration<double>(now - last_control_time_).count();
+  const double measured_elapsed =
+    std::chrono::duration<double>(now - last_control_time_).count();
+  const double elapsed = measured_elapsed > 0.0 ? measured_elapsed : control_period_seconds_;
   last_control_time_ = now;
   controller_.Update(elapsed);
   UpdateWheelSpeeds(elapsed, controller_.IsHolding());
-  ApplyControllerCommand();
-  driver_->SendCommand(robot_command_);
+  SendActuatorCommand(now, elapsed);
   LogStateTransition(controller_.GetState());
 }
 
@@ -279,33 +306,88 @@ void StandNode::UpdateWheelSpeeds(
     current_left_wheel_speed_, target_left_speed, max_change);
 }
 
-void StandNode::ApplyControllerCommand()
+bool StandNode::RefreshFeedback()
+{
+  const auto feedback = driver_->GetFeedback();
+  if (!feedback || feedback->received_at == last_feedback_time_) {
+    return false;
+  }
+  joint_state_frame_ = actuator_manager_->DecodeFeedback(*feedback);
+  last_feedback_time_ = joint_state_frame_.received_at;
+  return true;
+}
+
+void StandNode::BuildJointCommand(const SteadyTimePoint now)
 {
   const auto & desired_pose = controller_.GetDesiredPose();
-  const auto & config = controller_.GetConfig();
 
   for (std::size_t index = 0; index < StandController::kLegMotorCount; ++index) {
-    auto & motor = robot_command_.motors[index];
-    motor.control_mode = driver::MotorControlMode::kPosition;
-    motor.position = static_cast<float>(desired_pose[index]);
-    motor.velocity = 0.0F;
-    motor.kp = static_cast<float>(config.leg_kp);
-    motor.kd = static_cast<float>(config.leg_kd);
-    motor.torque = 0.0F;
+    auto & command = joint_command_frame_.joints[index];
+    command.control_mode = actuator::ControlMode::kPosition;
+    command.gain_profile = actuator::GainProfile::kNormal;
+    command.position = desired_pose[index];
+    command.velocity = 0.0;
+    command.torque_feedforward = 0.0;
   }
 
   const std::array<double, StandController::kWheelMotorCount> wheel_speeds{
     current_right_wheel_speed_, current_left_wheel_speed_,
     current_right_wheel_speed_, current_left_wheel_speed_};
   for (std::size_t offset = 0; offset < wheel_speeds.size(); ++offset) {
-    auto & motor = robot_command_.motors[StandController::kWheelMotorOffset + offset];
-    motor.control_mode = driver::MotorControlMode::kVelocity;
-    motor.position = 0.0F;
-    motor.velocity = static_cast<float>(wheel_speeds[offset]);
-    motor.kp = 0.0F;
-    motor.kd = static_cast<float>(config.wheel_kd);
-    motor.torque = 0.0F;
+    auto & command =
+      joint_command_frame_.joints[StandController::kWheelMotorOffset + offset];
+    command.control_mode = actuator::ControlMode::kVelocity;
+    command.gain_profile = actuator::GainProfile::kNormal;
+    command.position = 0.0;
+    command.velocity = wheel_speeds[offset];
+    command.torque_feedforward = 0.0;
   }
+  joint_command_frame_.created_at = now;
+  joint_command_frame_.sequence = ++command_sequence_;
+}
+
+bool StandNode::SendActuatorCommand(
+  const SteadyTimePoint now, const double elapsed_seconds)
+{
+  BuildJointCommand(now);
+  const auto output = actuator_manager_->Update(
+    joint_command_frame_, joint_state_frame_, now, elapsed_seconds);
+  robot_command_ = output.robot_command;
+  if (!driver_->SendCommand(robot_command_)) {
+    RCLCPP_ERROR_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "DDS driver rejected the actuator manager output");
+    return false;
+  }
+  if (output.combined_faults != actuator::ToMask(actuator::Fault::kNone)) {
+    std::ostringstream fault_details;
+    for (std::size_t index = 0; index < output.status.size(); ++index) {
+      if (output.status[index].faults == actuator::ToMask(actuator::Fault::kNone)) {
+        continue;
+      }
+      const auto joint_id = static_cast<actuator::JointId>(index);
+      const auto & config = actuator_manager_->GetModel().GetConfiguration(joint_id);
+      const auto & state = joint_state_frame_.joints[index];
+      fault_details << " joint[" << index << "]/motor[" << config.motor_index << "]"
+                    << "=0x" << std::hex << output.status[index].faults << std::dec
+                    << "(q=" << state.position << ", dq=" << state.velocity
+                    << ", range=[" << config.limits.min_position << ','
+                    << config.limits.max_position << "], vmax="
+                    << config.limits.max_velocity << ')';
+    }
+    if (!output.all_requests_accepted) {
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Actuator layer rejected a request (fault mask: 0x%08x); safe fallback was sent:%s",
+        output.combined_faults, fault_details.str().c_str());
+    } else {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Actuator layer is recovering a bounded position violation (fault mask: 0x%08x):%s",
+        output.combined_faults, fault_details.str().c_str());
+    }
+  }
+  return output.all_requests_accepted;
 }
 
 double StandNode::Approach(
@@ -373,10 +455,10 @@ int main(int argc, char * argv[])
     executor.spin_once(std::chrono::milliseconds(50));
   }
 
+  executor.remove_node(node);
   if (rclcpp::ok() && shutdown_requested != 0) {
     node->LieDownBeforeShutdown();
   }
-  executor.remove_node(node);
   node.reset();
   rclcpp::shutdown();
   return 0;
