@@ -1,0 +1,5 @@
+# Transport settings owned by the DDS driver adapter.
+driver:
+  command_topic: /lowcmd
+  state_topic: /lowstate
+  queue_depth: 10

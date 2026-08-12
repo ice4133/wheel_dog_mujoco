@@ -121,6 +121,7 @@ target_link_libraries(stand_skill_node
   ${PROJECT_NAME}_driver
   ${PROJECT_NAME}_actuator_manager
   ${PROJECT_NAME}_stand_skill
+  yaml-cpp
 )
 ament_target_dependencies(stand_skill_node ament_index_cpp geometry_msgs rclcpp unitree_go)
 
@@ -155,7 +156,7 @@ install(
 )
 
 install(DIRECTORY include/ DESTINATION include)
-install(FILES config.yaml DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(ament_index_cpp rclcpp unitree_go yaml-cpp)
@@ -168,13 +169,13 @@ if(BUILD_TESTING)
   ament_add_gtest(actuator_manager_test test/actuator_manager_test.cpp)
   target_link_libraries(actuator_manager_test ${PROJECT_NAME}_actuator_manager)
   target_compile_definitions(actuator_manager_test PRIVATE
-    ACTUATOR_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config.yaml"
+    ACTUATOR_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/actuator.yaml"
   )
 
   ament_add_gtest(body_model_test test/body_model_test.cpp)
   target_link_libraries(body_model_test ${PROJECT_NAME}_body_model)
   target_compile_definitions(body_model_test PRIVATE
-    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config.yaml"
+    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/body.yaml"
   )
 
   ament_add_gtest(body_state_estimator_test test/body_state_estimator_test.cpp)
@@ -182,7 +183,7 @@ if(BUILD_TESTING)
     ${PROJECT_NAME}_body_state_estimator
   )
   target_compile_definitions(body_state_estimator_test PRIVATE
-    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config.yaml"
+    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/body.yaml"
   )
 
   ament_add_gtest(body_trajectory_test test/body_trajectory_test.cpp)
@@ -191,7 +192,7 @@ if(BUILD_TESTING)
     ${PROJECT_NAME}_body_model
   )
   target_compile_definitions(body_trajectory_test PRIVATE
-    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config.yaml"
+    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/body.yaml"
   )
 
   ament_add_gtest(body_controller_test test/body_controller_test.cpp)
@@ -200,7 +201,7 @@ if(BUILD_TESTING)
     ${PROJECT_NAME}_body_model
   )
   target_compile_definitions(body_controller_test PRIVATE
-    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config.yaml"
+    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/body.yaml"
   )
 
   ament_add_gtest(wheel_leg_coordinator_test test/wheel_leg_coordinator_test.cpp)
@@ -208,7 +209,7 @@ if(BUILD_TESTING)
     ${PROJECT_NAME}_wheel_leg_coordinator
   )
   target_compile_definitions(wheel_leg_coordinator_test PRIVATE
-    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config.yaml"
+    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/body.yaml"
   )
 
   ament_add_gtest(body_manager_test test/body_manager_test.cpp)
@@ -216,7 +217,7 @@ if(BUILD_TESTING)
     ${PROJECT_NAME}_body_manager
   )
   target_compile_definitions(body_manager_test PRIVATE
-    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config.yaml"
+    BODY_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/body.yaml"
   )
 endif()
 

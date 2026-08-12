@@ -1,0 +1,66 @@
+# Go2W body-motion configuration.
+body:
+  geometry:
+    # base_link-frame joint origins, ordered by semantic leg name.
+    hip_positions_body:
+      front_right: [0.1934, -0.0465, 0.0]
+      front_left:  [0.1934,  0.0465, 0.0]
+      rear_right:  [-0.1934, -0.0465, 0.0]
+      rear_left:   [-0.1934,  0.0465, 0.0]
+    hip_link_length: 0.0955
+    thigh_link_length: 0.213
+    calf_link_length: 0.2264
+    wheel_radius: 0.086
+
+  limits:
+    min_ground_clearance: 0.15
+    max_ground_clearance: 0.48
+    max_roll: 0.45
+    max_pitch: 0.45
+    max_linear_velocity: [0.60, 0.25, 0.30]
+    max_angular_velocity: [0.80, 0.80, 1.50]
+    max_linear_acceleration: [1.50, 1.00, 1.00]
+    max_angular_acceleration: [3.00, 3.00, 4.00]
+
+  controller:
+    gains:
+      linear:
+        x: {kp: 1.0, ki: 0.10, kd: 0.05, integral_limit: 0.50}
+        y: {kp: 1.0, ki: 0.10, kd: 0.05, integral_limit: 0.25}
+        z: {kp: 1.0, ki: 0.10, kd: 0.15, integral_limit: 0.10}
+      angular:
+        roll:  {kp: 1.0, ki: 0.05, kd: 0.12, integral_limit: 0.10}
+        pitch: {kp: 1.0, ki: 0.05, kd: 0.15, integral_limit: 0.10}
+        yaw:   {kp: 1.0, ki: 0.05, kd: 0.10, integral_limit: 0.20}
+    max_time_step: 0.02
+    max_leg_extension_adjustment: 0.06
+    velocity_posture_time_horizon: 0.15
+    turning_roll_gain: 0.80
+    max_turning_roll: 0.18
+    lateral_acceleration_filter_coefficient: 0.90
+
+  trajectory:
+    max_time_step: 0.02
+    position_tolerance: 0.0001
+    orientation_tolerance: 0.0001
+    linear_velocity_tolerance: 0.001
+    angular_velocity_tolerance: 0.001
+
+  coordinator:
+    max_time_step: 0.02
+    max_wheel_speed: 6.0
+    max_wheel_acceleration: 12.0
+    lateral_velocity_tolerance: 0.01
+
+  estimator:
+    orientation_filter_coefficient: 0.98
+    velocity_filter_coefficient: 0.90
+    contact_force_threshold: 5.0
+    gravity_magnitude: 9.81
+    max_time_step: 0.02
+    accelerometer_includes_gravity: true
+
+  safety:
+    command_timeout: 0.10
+    actuator_state_timeout: 0.10
+    sensor_state_timeout: 0.10

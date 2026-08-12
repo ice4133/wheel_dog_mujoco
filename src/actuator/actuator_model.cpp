@@ -373,10 +373,10 @@ ActuatorModel::Configurations ActuatorModel::LoadConfigurations(const std::strin
     const YAML::Node actuators = root["actuators"];
     if (!profiles.IsMap() || !actuators.IsSequence()) {
       throw std::invalid_argument(
-              "config.yaml requires actuator_profiles map and actuators sequence");
+              "Actuator configuration requires actuator_profiles map and actuators sequence");
     }
     if (actuators.size() != kActuatorCount) {
-      throw std::invalid_argument("config.yaml must define exactly 16 actuators");
+      throw std::invalid_argument("Actuator configuration must define exactly 16 actuators");
     }
 
     Configurations result{};
@@ -407,10 +407,10 @@ ActuatorModel::Configurations ActuatorModel::LoadConfigurations(const std::strin
 
       const auto joint_index = ToIndex(joint_id);
       if (seen_joints[joint_index]) {
-        throw std::invalid_argument("Duplicate joint_id in config.yaml");
+        throw std::invalid_argument("Duplicate joint_id in actuator configuration");
       }
       if (seen_motors[config.motor_index]) {
-        throw std::invalid_argument("Duplicate motor_index in config.yaml");
+        throw std::invalid_argument("Duplicate motor_index in actuator configuration");
       }
       seen_joints[joint_index] = true;
       seen_motors[config.motor_index] = true;
@@ -418,7 +418,8 @@ ActuatorModel::Configurations ActuatorModel::LoadConfigurations(const std::strin
     }
 
     if (!std::all_of(seen_joints.begin(), seen_joints.end(), [](const bool seen) {return seen;})) {
-      throw std::invalid_argument("One or more JointId entries are missing from config.yaml");
+      throw std::invalid_argument(
+              "One or more JointId entries are missing from actuator configuration");
     }
     return result;
   } catch (const YAML::Exception & error) {

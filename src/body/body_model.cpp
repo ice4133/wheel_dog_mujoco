@@ -419,7 +419,7 @@ BodyConfig BodyModel::LoadConfig(const std::string & config_path)
     const YAML::Node root = YAML::LoadFile(config_path);
     const YAML::Node body = root["body"];
     if (!body.IsMap()) {
-      throw std::invalid_argument("config.yaml requires a body map");
+      throw std::invalid_argument("Body configuration requires a body map");
     }
 
     BodyConfig config;

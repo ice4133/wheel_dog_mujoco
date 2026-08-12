@@ -1,0 +1,21 @@
+# Runtime composition for the current Go2W MuJoCo executable.
+# Paths are resolved relative to this file.
+system:
+  robot: go2w
+  environment: mujoco
+
+  configs:
+    driver: driver.yaml
+    actuator: actuator.yaml
+    body: body.yaml
+    skill: skill.yaml
+
+  control_loop:
+    period: 0.002
+    state_timeout: 0.2
+
+  interfaces:
+    velocity_topic: /cmd_vel
+
+  shutdown:
+    timeout: 4.0

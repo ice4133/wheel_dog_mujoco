@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <csignal>
 #include <cmath>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <sstream>
@@ -13,11 +14,86 @@
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "rclcpp/logging.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "yaml-cpp/yaml.h"
 
 namespace wheel_dog_mujoco
 {
 namespace
 {
+
+struct SystemConfig
+{
+  std::string driver_config_path;
+  std::string actuator_config_path;
+  std::string body_config_path;
+  std::string skill_config_path;
+  std::string velocity_topic;
+  double control_period{0.002};
+  double state_timeout{0.2};
+  double shutdown_timeout{4.0};
+};
+
+struct DriverConfig
+{
+  std::string command_topic;
+  std::string state_topic;
+  std::size_t queue_depth{10U};
+};
+
+std::string ResolveConfigPath(
+  const std::filesystem::path & system_config_path,
+  const YAML::Node & configs, const char * key)
+{
+  const auto configured_path = std::filesystem::path(configs[key].as<std::string>());
+  if (configured_path.is_absolute()) {
+    return configured_path.lexically_normal().string();
+  }
+  return (system_config_path.parent_path() / configured_path).lexically_normal().string();
+}
+
+SystemConfig LoadSystemConfig(const std::string & config_path)
+{
+  try {
+    const std::filesystem::path system_path(config_path);
+    const YAML::Node system = YAML::LoadFile(config_path)["system"];
+    if (!system.IsMap() || !system["configs"].IsMap()) {
+      throw std::invalid_argument("system.yaml requires system and system.configs maps");
+    }
+
+    SystemConfig config;
+    const YAML::Node files = system["configs"];
+    config.driver_config_path = ResolveConfigPath(system_path, files, "driver");
+    config.actuator_config_path = ResolveConfigPath(system_path, files, "actuator");
+    config.body_config_path = ResolveConfigPath(system_path, files, "body");
+    config.skill_config_path = ResolveConfigPath(system_path, files, "skill");
+    config.control_period = system["control_loop"]["period"].as<double>();
+    config.state_timeout = system["control_loop"]["state_timeout"].as<double>();
+    config.velocity_topic = system["interfaces"]["velocity_topic"].as<std::string>();
+    config.shutdown_timeout = system["shutdown"]["timeout"].as<double>();
+    return config;
+  } catch (const YAML::Exception & error) {
+    throw std::runtime_error(
+            "Failed to parse system configuration '" + config_path + "': " + error.what());
+  }
+}
+
+DriverConfig LoadDriverConfig(const std::string & config_path)
+{
+  try {
+    const YAML::Node driver = YAML::LoadFile(config_path)["driver"];
+    if (!driver.IsMap()) {
+      throw std::invalid_argument("driver.yaml requires a driver map");
+    }
+    DriverConfig config;
+    config.command_topic = driver["command_topic"].as<std::string>();
+    config.state_topic = driver["state_topic"].as<std::string>();
+    config.queue_depth = driver["queue_depth"].as<std::size_t>();
+    return config;
+  } catch (const YAML::Exception & error) {
+    throw std::runtime_error(
+            "Failed to parse driver configuration '" + config_path + "': " + error.what());
+  }
+}
 
 skill::StandSkill::LegJointPositions ConvertPose(
   const std::vector<double> & values, const char * parameter_name)
@@ -35,22 +111,69 @@ skill::StandSkill::LegJointPositions ConvertPose(
   return pose;
 }
 
+skill::StandSkill::Config LoadStandSkillConfig(const std::string & config_path)
+{
+  try {
+    const YAML::Node stand = YAML::LoadFile(config_path)["skill"]["stand"];
+    if (!stand.IsMap()) {
+      throw std::invalid_argument("skill.yaml requires a skill.stand map");
+    }
+    skill::StandSkill::Config config;
+    config.crouch_pose = ConvertPose(
+      stand["crouch_pose"].as<std::vector<double>>(), "skill.stand.crouch_pose");
+    config.stand_pose = ConvertPose(
+      stand["stand_pose"].as<std::vector<double>>(), "skill.stand.stand_pose");
+    config.crouch_duration = stand["crouch_duration"].as<double>();
+    config.rise_duration = stand["rise_duration"].as<double>();
+    config.lie_down_duration = stand["lie_down_duration"].as<double>();
+    config.velocity_timeout = stand["velocity_timeout"].as<double>();
+    config.wheel_radius = stand["wheel_radius"].as<double>();
+    config.track_width = stand["track_width"].as<double>();
+    config.max_wheel_speed = stand["max_wheel_speed"].as<double>();
+    config.wheel_acceleration = stand["wheel_acceleration"].as<double>();
+    return config;
+  } catch (const YAML::Exception & error) {
+    throw std::runtime_error(
+            "Failed to parse skill configuration '" + config_path + "': " + error.what());
+  }
+}
+
 }  // namespace
 
 StandSkillNode::StandSkillNode(const rclcpp::NodeOptions & options)
 : Node("go2w_stand_skill", options)
 {
-  control_period_seconds_ = declare_parameter<double>("control_period", 0.002);
-  state_timeout_seconds_ = declare_parameter<double>("state_timeout", 0.2);
-  shutdown_timeout_seconds_ = declare_parameter<double>("shutdown_timeout", 4.0);
-  const auto command_topic = declare_parameter<std::string>("command_topic", "/lowcmd");
-  const auto state_topic = declare_parameter<std::string>("state_topic", "/lowstate");
-  const auto velocity_topic = declare_parameter<std::string>("velocity_topic", "/cmd_vel");
-  const auto default_config =
-    ament_index_cpp::get_package_share_directory("wheel_dog_mujoco") + "/config.yaml";
-  const auto config_path = declare_parameter<std::string>("config_path", default_config);
+  const auto package_share =
+    ament_index_cpp::get_package_share_directory("wheel_dog_mujoco");
+  const auto system_config_path = declare_parameter<std::string>(
+    "system_config_path", package_share + "/config/system.yaml");
+  const SystemConfig system_config = LoadSystemConfig(system_config_path);
+  const auto driver_config_path = declare_parameter<std::string>(
+    "driver_config_path", system_config.driver_config_path);
+  const auto actuator_config_path = declare_parameter<std::string>(
+    "actuator_config_path", system_config.actuator_config_path);
+  const auto skill_config_path = declare_parameter<std::string>(
+    "skill_config_path", system_config.skill_config_path);
+  const DriverConfig driver_config = LoadDriverConfig(driver_config_path);
+  const skill::StandSkill::Config yaml_skill_config =
+    LoadStandSkillConfig(skill_config_path);
+
+  control_period_seconds_ = declare_parameter<double>(
+    "control_period", system_config.control_period);
+  state_timeout_seconds_ = declare_parameter<double>(
+    "state_timeout", system_config.state_timeout);
+  shutdown_timeout_seconds_ = declare_parameter<double>(
+    "shutdown_timeout", system_config.shutdown_timeout);
+  const auto command_topic = declare_parameter<std::string>(
+    "command_topic", driver_config.command_topic);
+  const auto state_topic = declare_parameter<std::string>(
+    "state_topic", driver_config.state_topic);
+  const auto velocity_topic = declare_parameter<std::string>(
+    "velocity_topic", system_config.velocity_topic);
+  const auto queue_depth = declare_parameter<std::int64_t>(
+    "driver_queue_depth", static_cast<std::int64_t>(driver_config.queue_depth));
   if (control_period_seconds_ <= 0.0 || state_timeout_seconds_ <= 0.0 ||
-    shutdown_timeout_seconds_ <= 0.0)
+    shutdown_timeout_seconds_ <= 0.0 || queue_depth <= 0)
   {
     throw std::invalid_argument("StandSkillNode timing parameters are invalid");
   }
@@ -59,28 +182,37 @@ StandSkillNode::StandSkillNode(const rclcpp::NodeOptions & options)
   skill_config.crouch_pose = ConvertPose(
     declare_parameter<std::vector<double>>(
       "crouch_pose",
-      {0.0, 1.36, -2.65, 0.0, 1.36, -2.65,
-        -0.2, 1.36, -2.65, 0.2, 1.36, -2.65}),
+      std::vector<double>(
+        yaml_skill_config.crouch_pose.begin(), yaml_skill_config.crouch_pose.end())),
     "crouch_pose");
   skill_config.stand_pose = ConvertPose(
     declare_parameter<std::vector<double>>(
       "stand_pose",
-      {0.0, 0.67, -1.30, 0.0, 0.67, -1.30,
-        0.0, 0.67, -1.30, 0.0, 0.67, -1.30}),
+      std::vector<double>(
+        yaml_skill_config.stand_pose.begin(), yaml_skill_config.stand_pose.end())),
     "stand_pose");
-  skill_config.crouch_duration = declare_parameter<double>("crouch_duration", 1.0);
-  skill_config.rise_duration = declare_parameter<double>("rise_duration", 1.6);
-  skill_config.lie_down_duration = declare_parameter<double>("lie_down_duration", 1.5);
-  skill_config.velocity_timeout = declare_parameter<double>("velocity_timeout", 0.25);
-  skill_config.wheel_radius = declare_parameter<double>("wheel_radius", 0.086);
-  skill_config.track_width = declare_parameter<double>("track_width", 0.284);
-  skill_config.max_wheel_speed = declare_parameter<double>("max_wheel_speed", 6.0);
-  skill_config.wheel_acceleration = declare_parameter<double>("wheel_acceleration", 12.0);
+  skill_config.crouch_duration = declare_parameter<double>(
+    "crouch_duration", yaml_skill_config.crouch_duration);
+  skill_config.rise_duration = declare_parameter<double>(
+    "rise_duration", yaml_skill_config.rise_duration);
+  skill_config.lie_down_duration = declare_parameter<double>(
+    "lie_down_duration", yaml_skill_config.lie_down_duration);
+  skill_config.velocity_timeout = declare_parameter<double>(
+    "velocity_timeout", yaml_skill_config.velocity_timeout);
+  skill_config.wheel_radius = declare_parameter<double>(
+    "wheel_radius", yaml_skill_config.wheel_radius);
+  skill_config.track_width = declare_parameter<double>(
+    "track_width", yaml_skill_config.track_width);
+  skill_config.max_wheel_speed = declare_parameter<double>(
+    "max_wheel_speed", yaml_skill_config.max_wheel_speed);
+  skill_config.wheel_acceleration = declare_parameter<double>(
+    "wheel_acceleration", yaml_skill_config.wheel_acceleration);
 
-  actuator_manager_ = std::make_unique<actuator::ActuatorManager>(config_path);
+  actuator_manager_ = std::make_unique<actuator::ActuatorManager>(actuator_config_path);
   stand_skill_ = std::make_unique<skill::StandSkill>(skill_config);
   driver_ = std::make_unique<driver::DrvDds>(
-    *this, driver::DrvDds::Config{command_topic, state_topic, 10U});
+    *this, driver::DrvDds::Config{
+      command_topic, state_topic, static_cast<std::size_t>(queue_depth)});
   velocity_subscription_ = create_subscription<geometry_msgs::msg::Twist>(
     velocity_topic, 10,
     std::bind(&StandSkillNode::OnVelocityCommand, this, std::placeholders::_1));

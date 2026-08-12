@@ -78,7 +78,8 @@ ros2 run wheel_dog_mujoco stand_skill_node
 - `rise_duration`：蹲姿到站姿的时间，默认 `1.6 s`；
 - `lie_down_duration`：退出时回到蹲姿的时间，默认 `1.5 s`；
 - `shutdown_timeout`：趴下最长等待时间，默认 `4.0 s`；
-- `config_path`：执行器映射、限制和增益配置文件。
+- `system_config_path`：系统装配配置，默认安装目录下的 `config/system.yaml`；
+- `driver_config_path`、`actuator_config_path`、`skill_config_path`：可选的分层配置覆盖。
 
 例如延长起身时间：
 
@@ -125,9 +126,11 @@ ros2 run wheel_dog_mujoco keyboard_controller
 
 ## 配置和安全边界
 
-[config.yaml](config.yaml) 同时保存本体几何、运动限制、估计器、轨迹、协调器，以及执行器
-映射、极限和 PID 增益。轮腿顺序统一为 `FR, FL, RR, RL`，关节层使用语义化 `JointId`，
-电机编号和方向只存在于执行器配置中。
+[config/system.yaml](config/system.yaml) 负责运行时装配并引用各层配置：
+`driver.yaml` 保存 DDS 通信设置，`actuator.yaml` 保存执行器映射、硬限制、增益和安全参数，
+`body.yaml` 保存本体几何、运动限制、估计器、轨迹和协调器参数，`skill.yaml` 保存当前技能
+参数。轮腿顺序统一为 `FR, FL, RR, RL`，关节层使用语义化 `JointId`，电机编号和方向只
+存在于执行器配置中。
 
 当 `/cmd_vel` 中断时，技能看门狗会把目标轮速置零并按 `wheel_acceleration` 制动。
 当 `/lowstate` 过期或反馈非法时，活动指令不会继续下发，节点改发安全回退命令。

@@ -1,0 +1,21 @@
+# Motion-skill parameters. The current runtime exposes only StandSkill; the
+# task-level state machine will be added separately once its transitions are fixed.
+skill:
+  stand:
+    crouch_pose:
+      [0.0, 1.36, -2.65, 0.0, 1.36, -2.65,
+       -0.2, 1.36, -2.65, 0.2, 1.36, -2.65]
+    stand_pose:
+      [0.0, 0.67, -1.30, 0.0, 0.67, -1.30,
+       0.0, 0.67, -1.30, 0.0, 0.67, -1.30]
+    crouch_duration: 1.0
+    rise_duration: 1.6
+    lie_down_duration: 1.5
+    velocity_timeout: 0.25
+
+    # Transitional parameters used by the existing joint-space StandSkill.
+    # They move to the body layer when standing motion is routed through BodyManager.
+    wheel_radius: 0.086
+    track_width: 0.284
+    max_wheel_speed: 6.0
+    wheel_acceleration: 12.0
