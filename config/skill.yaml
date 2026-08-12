@@ -1,6 +1,9 @@
-# Motion-skill parameters. The current runtime exposes only StandSkill; the
-# task-level state machine will be added separately once its transitions are fixed.
+# Task-level state machine and motion-skill parameters.
 skill:
+  task:
+    # Safe default: wait in actuator damping until an explicit stand request.
+    initial_state: idle
+
   stand:
     crouch_pose:
       [0.0, 1.36, -2.65, 0.0, 1.36, -2.65,
@@ -11,9 +14,12 @@ skill:
     crouch_duration: 1.0
     rise_duration: 1.6
     lie_down_duration: 1.5
+    # A posture action completes only after feedback enters both tolerances.
+    position_tolerance: 0.08
+    velocity_tolerance: 0.5
     velocity_timeout: 0.25
 
-    # Transitional parameters used by the existing joint-space StandSkill.
+    # Transitional parameters used by SkillTaskNode's direct joint-space executor.
     # They move to the body layer when standing motion is routed through BodyManager.
     wheel_radius: 0.086
     track_width: 0.284

@@ -15,6 +15,7 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(unitree_go REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
@@ -114,16 +115,25 @@ target_include_directories(${PROJECT_NAME}_stand_skill PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-add_executable(stand_skill_node
-  src/stand_skill_node.cpp
+add_library(${PROJECT_NAME}_skill_task src/skill/skill_task.cpp)
+target_include_directories(${PROJECT_NAME}_skill_task PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(stand_skill_node
+
+add_executable(skill_task
+  src/skill/skill_task_node.cpp
+  src/skill/skill_task_main.cpp
+)
+target_link_libraries(skill_task
   ${PROJECT_NAME}_driver
   ${PROJECT_NAME}_actuator_manager
   ${PROJECT_NAME}_stand_skill
+  ${PROJECT_NAME}_skill_task
   yaml-cpp
 )
-ament_target_dependencies(stand_skill_node ament_index_cpp geometry_msgs rclcpp unitree_go)
+ament_target_dependencies(
+  skill_task ament_index_cpp geometry_msgs rclcpp std_msgs unitree_go)
 
 add_executable(keyboard_controller
   src/keyboard_controller.cpp
@@ -147,7 +157,8 @@ install(
     ${PROJECT_NAME}_wheel_leg_coordinator
     ${PROJECT_NAME}_body_manager
     ${PROJECT_NAME}_stand_skill
-    stand_skill_node
+    ${PROJECT_NAME}_skill_task
+    skill_task
     keyboard_controller
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
@@ -159,7 +170,8 @@ install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(ament_index_cpp rclcpp unitree_go yaml-cpp)
+ament_export_dependencies(
+  ament_index_cpp geometry_msgs rclcpp std_msgs unitree_go yaml-cpp)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -171,6 +183,12 @@ if(BUILD_TESTING)
   target_compile_definitions(actuator_manager_test PRIVATE
     ACTUATOR_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/actuator.yaml"
   )
+
+  ament_add_gtest(skill_task_test test/skill_task_test.cpp)
+  target_link_libraries(skill_task_test ${PROJECT_NAME}_skill_task)
+
+  ament_add_gtest(stand_skill_test test/stand_skill_test.cpp)
+  target_link_libraries(stand_skill_test ${PROJECT_NAME}_stand_skill)
 
   ament_add_gtest(body_model_test test/body_model_test.cpp)
   target_link_libraries(body_model_test ${PROJECT_NAME}_body_model)

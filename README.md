@@ -6,11 +6,18 @@ Go2W 四轮足的 ROS 2 推理与控制包。代码按“硬件通信层 → 执
 ## 控制链路
 
 ```text
-keyboard_controller
-                 │ /cmd_vel
-                 ▼
-             StandSkill
-                 │ JointCommandFrame
+keyboard_controller                         upper command
+        │ /cmd_vel                            │ /skill_request
+        └──────────────────┐                  │
+                           ▼                  ▼
+                         SkillTaskNode
+                     ▲       │
+       profile/limits│       │target trajectory + command
+                     │       ▼
+                 StandSkill  SkillTask
+                     │       ▲
+                     └───────┘ action/state
+                           │ JointCommandFrame
                  ▼
           ActuatorManager
                  │ RobotCommand
@@ -21,9 +28,14 @@ keyboard_controller
          unitree_mujoco / 真机
 ```
 
-`StandSkill` 属于 L4 运动技能层，负责“等待状态 → 恢复蹲姿 → 起身 → 站立移动 →
-趴下”的有限状态流程。它从实际关节角平滑插值到固定蹲姿和站姿，直接输出语义化
-`JointCommandFrame`，整个站立过程不使用 IK。
+`SkillTask` 是任务级状态机，显式管理 `idle → preparing_stand → rising → standing`
+以及 `lying_down`、`fault` 状态，并为每个状态选择一个细粒度动作。`StandSkill` 不再执行
+动作，只保存站立技能的姿态、时长、约束和“是否到位”判定。姿态插值、轮速计算、速度看门狗
+和 `JointCommandFrame` 生成统一由 `SkillTaskNode` 负责。
+
+初始目标由 `skill.task.initial_state` 配置，当前默认是 `idle`，因此不会把 `stand` 硬编码成
+Idle 的起始行为。当前运行链路仍由 `SkillTaskNode` 直接输出到执行器层，整个站立过程不使用
+IK；以后修正本体层后，可以只替换 TaskNode 的动作执行后端，而不改变状态机和技能特性。
 
 `BodyManager::Update()` 只接收与传输无关的 `BodyCommandFrame`、`JointStateFrame` 和
 `BodySensorFrame`，返回完整 `JointCommandFrame` 和本体状态。本体层不依赖 DDS 或 ROS 消息。
@@ -36,8 +48,9 @@ keyboard_controller
 - 保持轮速饱和前后的曲率，并限制轮速加速度；
 - 在工作空间边缘投影到最近可达目标，在真正不可恢复时输出阻尼回退。
 
-旧的 `StandController`、`stand_node` 和自动站立 `body_node` 已移除。`stand_skill_node` 是
-当前唯一的 `/lowcmd` 发布者；其他动作后续使用各自独立的 skill 节点，运行时只能启动一个。
+`skill_task` 是当前唯一的 `/lowcmd` 发布者。后续姿态技能只提供各自特性和约束，由
+`SkillTask` 统一选动作、`SkillTaskNode` 统一计算和发送，避免技能对象各自维护控制循环或争用
+底层命令。
 
 ## 编译
 
@@ -60,12 +73,23 @@ source ~/robot_ws/install/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export ROS_DOMAIN_ID=1
 export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo"/></Interfaces></General></Domain></CycloneDDS>'
-ros2 run wheel_dog_mujoco stand_skill_node
+ros2 run wheel_dog_mujoco skill_task
 ```
 
-节点收到新鲜的 `/lowstate` 后立即从实测关节角插值到 `crouch_pose`，然后插值到
-`stand_pose`。站立完成前轮子保持停止。正常按 `Ctrl+C` 时，技能先制动轮子，再从当前关节
-姿态插值回 `crouch_pose`，最后退出；`SIGKILL` 无法执行趴下流程。
+节点收到新鲜的 `/lowstate` 后保持 `idle` 阻尼状态。另开一个终端发送站立请求：
+
+```bash
+ros2 topic pub --once /skill_request std_msgs/msg/String "{data: stand}"
+```
+
+状态可通过 `/skill_state` 查看。请求返回 Idle 时，状态机会先执行趴下动作：
+
+```bash
+ros2 topic pub --once /skill_request std_msgs/msg/String "{data: idle}"
+```
+
+正常按 `Ctrl+C` 时也会先请求 Idle；如果正在站立，则先制动轮子并回到蹲姿再退出。
+`SIGKILL` 无法执行安全返回流程。
 
 常用 ROS 参数：
 
@@ -77,6 +101,7 @@ ros2 run wheel_dog_mujoco stand_skill_node
 - `crouch_duration`：移动到安全蹲姿的时间，默认 `1.0 s`；
 - `rise_duration`：蹲姿到站姿的时间，默认 `1.6 s`；
 - `lie_down_duration`：退出时回到蹲姿的时间，默认 `1.5 s`；
+- `position_tolerance`、`velocity_tolerance`：姿态动作完成所需的反馈容差；
 - `shutdown_timeout`：趴下最长等待时间，默认 `4.0 s`；
 - `system_config_path`：系统装配配置，默认安装目录下的 `config/system.yaml`；
 - `driver_config_path`、`actuator_config_path`、`skill_config_path`：可选的分层配置覆盖。
@@ -84,13 +109,13 @@ ros2 run wheel_dog_mujoco stand_skill_node
 例如延长起身时间：
 
 ```bash
-ros2 run wheel_dog_mujoco stand_skill_node --ros-args \
+ros2 run wheel_dog_mujoco skill_task --ros-args \
   -p rise_duration:=2.5
 ```
 
 ## 键盘控制与丝滑度检查
 
-保持 `stand_skill_node` 运行，再打开一个具有相同 ROS/DDS 环境的新终端：
+保持 `skill_task` 运行并发送 `stand` 请求，再打开一个具有相同 ROS/DDS 环境的新终端：
 
 ```bash
 source /opt/ros/jazzy/setup.bash
@@ -132,17 +157,17 @@ ros2 run wheel_dog_mujoco keyboard_controller
 参数。轮腿顺序统一为 `FR, FL, RR, RL`，关节层使用语义化 `JointId`，电机编号和方向只
 存在于执行器配置中。
 
-当 `/cmd_vel` 中断时，技能看门狗会把目标轮速置零并按 `wheel_acceleration` 制动。
+当 `/cmd_vel` 中断时，TaskNode 看门狗会把目标轮速置零并按 `wheel_acceleration` 制动。
 当 `/lowstate` 过期或反馈非法时，活动指令不会继续下发，节点改发安全回退命令。
 
 ## 单元测试
 
-构建时开启测试后，可以单独运行本体控制链路的 40 个测试用例：
+构建时开启测试后，可以运行任务状态机、执行器和本体控制链路测试：
 
 ```bash
 cd ~/robot_ws
 source /opt/ros/jazzy/setup.bash
 colcon build --packages-select wheel_dog_mujoco --cmake-args -DBUILD_TESTING=ON
 ctest --test-dir build/wheel_dog_mujoco --output-on-failure \
-  -R 'actuator_manager_test|body_model_test|body_state_estimator_test|body_trajectory_test|body_controller_test|wheel_leg_coordinator_test|body_manager_test'
+  -R 'skill_task_test|stand_skill_test|actuator_manager_test|body_model_test|body_state_estimator_test|body_trajectory_test|body_controller_test|wheel_leg_coordinator_test|body_manager_test'
 ```

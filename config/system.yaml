@@ -16,6 +16,8 @@ system:
 
   interfaces:
     velocity_topic: /cmd_vel
+    skill_request_topic: /skill_request
+    skill_state_topic: /skill_state
 
   shutdown:
     timeout: 4.0
