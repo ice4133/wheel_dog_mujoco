@@ -1,5 +1,5 @@
 CompileFlags:
-  CompilationDatabase: /home/ice/robot_ws/build/wheel_dog_mujoco
+  CompilationDatabase: ../../build/wheel_dog_mujoco
   Add:
     - -std=c++17
 
